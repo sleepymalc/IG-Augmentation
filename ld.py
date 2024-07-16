@@ -6,6 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Sequence
 from scipy.special import logsumexp as scipy_logsumexp
+import itertools
 
 try:
     import cupy as cp
@@ -17,6 +18,100 @@ except ImportError:
         return np
     cp.get_array_module = get_array_module
 
+
+def compute_Q(theta):
+        r"""Compute decomposable tensor Q from parameter \theta using Dynamic Programming.
+
+        Parameters
+        ----------
+        theta : array
+            second/third-order tensor.
+            Same shapes as input tensor P.
+
+        beta : list
+            sets of decomposition basis vectors.
+
+        Returns
+        -------
+        Q : array
+            second/third-order tensor.
+            Decomposable tensor.
+        """
+        idx = theta.shape
+        order = len(theta.shape)
+        theta_sum = np.zeros(theta.shape)
+
+        if order == 2:
+            theta_sum[0, 0] = theta[0, 0]
+
+            # update outside eta.
+            for i in range(1, idx[0]):
+                theta_sum[i, 0] = theta[i, 0] + theta_sum[i-1, 0]
+            for j in range(1, idx[1]):
+                theta_sum[0, j] = theta[0, j] + theta_sum[0, j-1]
+
+            # update internal eta.
+            for i in range(1, idx[0]):
+                for j in range(1, idx[1]):
+                    theta_sum[i, j] = theta[i, j] + theta_sum[i-1, j] \
+                                        + theta_sum[i, j-1] - theta_sum[i-1, j-1]
+
+        elif order == 3:
+            theta_sum[0, 0, 0] = theta[0, 0, 0]
+
+            # update outside eta.
+            for i in range(1, idx[0]):
+                theta_sum[i, 0, 0] = theta[i, 0, 0] + theta_sum[i-1, 0, 0]
+            for j in range(1, idx[1]):
+                theta_sum[0, j, 0] = theta[0, j, 0] + theta_sum[0, j-1, 0]
+            for k in range(1, idx[2]):
+                theta_sum[0, 0, k] = theta[0, 0, k] + theta_sum[0, 0, k-1]
+
+            # update internal eta.
+            for i, j in itertools.product(range(1, idx[0]), range(1, idx[1])):
+                theta_sum[i, j, 0] = theta[i, j, 0] + theta_sum[i-1, j, 0] \
+                                        + theta_sum[i, j-1, 0] - theta_sum[i-1, j-1, 0]
+            for j, k in itertools.product(range(1, idx[1]), range(1, idx[2])):
+                theta_sum[0, j, k] = theta[0, j, k] + theta_sum[0, j-1, k] \
+                                        + theta_sum[0, j, k-1] - theta_sum[0, j-1, k-1]
+            for i, k in itertools.product(range(1, idx[0]), range(1, idx[2])):
+                theta_sum[i, 0, k] = theta[i, 0, k] + theta_sum[i-1, 0, k] \
+                                        + theta_sum[i, 0, k-1] - theta_sum[i-1, 0, k-1]
+
+            for i, j, k in itertools.product(range(1, idx[0]), range(1, idx[1]), range(1, idx[2])):
+                theta_sum[i, j, k] = theta[i, j, k] + theta_sum[i-1, j, k] + theta_sum[i, j-1, k] \
+                                    + theta_sum[i, j, k-1] - theta_sum[i-1, j-1, k] - theta_sum[i-1, j, k-1] \
+                                    - theta_sum[i, j-1, k-1] + theta_sum[i-1, j-1, k-1]
+
+        else:
+            raise NotImplementedError("Order of input tensor should be 2 or 3. Order: {}.".format(order))
+
+        Q = np.exp(theta_sum)
+        psi = Q.sum()
+        Q /= psi
+
+        return Q
+
+def block_B(start_idx, end_idx):
+    """
+    Create a block B of indexes for the center region.
+
+    Parameters:
+    - start_idx: tuple or list, starting indices for each dimension
+    - end_idx: tuple or list, ending indices for each dimension
+
+    Returns:
+    - center_region_indexes: numpy array with shape (n, d), the indexes of the center region, where d is the number of dimensions
+    """
+    if len(start_idx) != len(end_idx):
+        raise ValueError("start_idx and end_idx must have the same number of dimensions.")
+
+    # Generate all combinations of indices
+    grids = [np.arange(start, end) for start, end in zip(start_idx, end_idx)]
+    mesh_grids = np.meshgrid(*grids, indexing='ij')
+    center_region_indexes = np.column_stack([grid.flatten() for grid in mesh_grids])
+
+    return center_region_indexes
 
 def default_B(shape: Sequence[int], order: int, xp: ModuleType = np) -> NDArray[np.intp]:
     """Vectorized implementation of the default B tensor.
