@@ -18,80 +18,6 @@ except ImportError:
         return np
     cp.get_array_module = get_array_module
 
-
-def compute_Q(theta):
-        r"""Compute decomposable tensor Q from parameter \theta using Dynamic Programming.
-
-        Parameters
-        ----------
-        theta : array
-            second/third-order tensor.
-            Same shapes as input tensor P.
-
-        beta : list
-            sets of decomposition basis vectors.
-
-        Returns
-        -------
-        Q : array
-            second/third-order tensor.
-            Decomposable tensor.
-        """
-        idx = theta.shape
-        order = len(theta.shape)
-        theta_sum = np.zeros(theta.shape)
-
-        if order == 2:
-            theta_sum[0, 0] = theta[0, 0]
-
-            # update outside eta.
-            for i in range(1, idx[0]):
-                theta_sum[i, 0] = theta[i, 0] + theta_sum[i-1, 0]
-            for j in range(1, idx[1]):
-                theta_sum[0, j] = theta[0, j] + theta_sum[0, j-1]
-
-            # update internal eta.
-            for i in range(1, idx[0]):
-                for j in range(1, idx[1]):
-                    theta_sum[i, j] = theta[i, j] + theta_sum[i-1, j] \
-                                        + theta_sum[i, j-1] - theta_sum[i-1, j-1]
-
-        elif order == 3:
-            theta_sum[0, 0, 0] = theta[0, 0, 0]
-
-            # update outside eta.
-            for i in range(1, idx[0]):
-                theta_sum[i, 0, 0] = theta[i, 0, 0] + theta_sum[i-1, 0, 0]
-            for j in range(1, idx[1]):
-                theta_sum[0, j, 0] = theta[0, j, 0] + theta_sum[0, j-1, 0]
-            for k in range(1, idx[2]):
-                theta_sum[0, 0, k] = theta[0, 0, k] + theta_sum[0, 0, k-1]
-
-            # update internal eta.
-            for i, j in itertools.product(range(1, idx[0]), range(1, idx[1])):
-                theta_sum[i, j, 0] = theta[i, j, 0] + theta_sum[i-1, j, 0] \
-                                        + theta_sum[i, j-1, 0] - theta_sum[i-1, j-1, 0]
-            for j, k in itertools.product(range(1, idx[1]), range(1, idx[2])):
-                theta_sum[0, j, k] = theta[0, j, k] + theta_sum[0, j-1, k] \
-                                        + theta_sum[0, j, k-1] - theta_sum[0, j-1, k-1]
-            for i, k in itertools.product(range(1, idx[0]), range(1, idx[2])):
-                theta_sum[i, 0, k] = theta[i, 0, k] + theta_sum[i-1, 0, k] \
-                                        + theta_sum[i, 0, k-1] - theta_sum[i-1, 0, k-1]
-
-            for i, j, k in itertools.product(range(1, idx[0]), range(1, idx[1]), range(1, idx[2])):
-                theta_sum[i, j, k] = theta[i, j, k] + theta_sum[i-1, j, k] + theta_sum[i, j-1, k] \
-                                    + theta_sum[i, j, k-1] - theta_sum[i-1, j-1, k] - theta_sum[i-1, j, k-1] \
-                                    - theta_sum[i, j-1, k-1] + theta_sum[i-1, j-1, k-1]
-
-        else:
-            raise NotImplementedError("Order of input tensor should be 2 or 3. Order: {}.".format(order))
-
-        Q = np.exp(theta_sum)
-        psi = Q.sum()
-        Q /= psi
-
-        return Q
-
 def block_B(start_idx, end_idx):
     """
     Create a block B of indexes for the center region.
@@ -112,6 +38,24 @@ def block_B(start_idx, end_idx):
     center_region_indexes = np.column_stack([grid.flatten() for grid in mesh_grids])
 
     return center_region_indexes
+
+def step_B(shape, step_size):
+    """
+    Create an index set for a tensor with a specified step size.
+
+    Parameters:
+    - shape: tuple, shape of the tensor (or matrix)
+    - step_size: int or tuple of ints, step size along each dimension
+
+    Returns:
+    - index_set: numpy array with shape (n, len(shape)), the indices with the specified step size
+    """
+    # Generate all combinations of indices with step size
+    grids = [np.arange(0, size, step) for size, step in zip(shape, step_size)]
+    mesh_grids = np.meshgrid(*grids, indexing='ij')
+    index_set = np.column_stack([grid.flatten() for grid in mesh_grids])
+
+    return index_set
 
 def default_B(shape: Sequence[int], order: int, xp: ModuleType = np) -> NDArray[np.intp]:
     """Vectorized implementation of the default B tensor.
@@ -173,6 +117,41 @@ def get_h(theta: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.
         theta = xp.cumsum(theta, axis=i)
     return theta
 
+def get_Q(theta: NDArray[np.float_], eps: float = 1.0e-5, gpu: bool = True, dtype: np.dtype | None = None,):
+    r"""Compute decomposable tensor Q from parameter theta
+
+    Parameters
+    ----------
+    theta : array
+        second/third-order tensor.
+        Same shapes as input tensor P.
+    eps : (see paper)
+
+    Returns
+    -------
+    Q : array
+        second/third-order tensor.
+        Decomposable tensor.
+    """
+    if gpu:
+        eps = cp.asarray(eps, dtype=dtype)
+        theta = cp.asarray(theta, dtype=dtype)
+        logsumexp = cupy_logsumexp
+    else:
+        logsumexp = scipy_logsumexp
+
+    xp = cp.get_array_module(theta)
+
+    # theta => H => Q
+    D = len(theta.shape)
+    Hq = get_h(theta, D, xp)
+    logQ_ = Hq
+    logQ = logQ_ - logsumexp(logQ_)
+    Q = xp.exp(logQ) + eps
+    Q /= Q.sum()
+
+    return Q
+
 def LD(X: NDArray[np.float_],
     B: NDArray[np.intp] | list[tuple[int, ...]] | None = None,
     order: int = 2,
@@ -183,7 +162,7 @@ def LD(X: NDArray[np.float_],
     ngd: bool = True,
     verbose: bool = True,
     gpu: bool = True,
-    exit_abs: bool = False,
+    exit_abs: bool = True,
     dtype: np.dtype | None = None,
 ) -> tuple[list[list[float]], np.float_, NDArray[np.float_], NDArray[np.float_]]:
     """Compute many-body tensor approximation.
@@ -204,12 +183,12 @@ def LD(X: NDArray[np.float_],
         dtype: By default, the data-type is inferred from the input data.
 
     Returns:
-        all_history_kl: KL divergence history.
+        history_kl: KL divergence history.
+        history_norm: norm difference history.
         scaleX: Scaled X tensor.
         Q: Q tensor.
         theta: Theta.
     """
-    all_history_kl = []
     D = len(X.shape)
     S = X.shape
 
@@ -224,9 +203,6 @@ def LD(X: NDArray[np.float_],
         X = cp.asarray(X, dtype=dtype)
         eps = cp.asarray(eps, dtype=dtype)
         lr = cp.asarray(lr, dtype=dtype)
-        logsumexp = cupy_logsumexp
-    else:
-        logsumexp = scipy_logsumexp
 
     xp = cp.get_array_module(X)
 
@@ -245,19 +221,26 @@ def LD(X: NDArray[np.float_],
 
     Q = xp.ones(P.shape, dtype=dtype)  # TODO: ones_like?
     Q = Q / xp.sum(Q)
+
     ### eta
-    # print("Get initial eta")
-    eta_hat = get_eta(P, D, xp)
-    eta_hat_b = xp.take(eta_hat, B_flat)
-    ###
     eta_b = xp.empty((len(B),), dtype=dtype)
     theta_b = xp.zeros((len(B),), dtype=dtype)
+
+    ### eta_hat
+    eta_hat = get_eta(P, D, xp)
+    eta_hat_b = xp.take(eta_hat, B_flat)
+
     G = xp.zeros((len(B), len(B)), dtype=dtype)  # TODO: Too large!
-    history_kl = []
-    prev_kld = None
+
     # evaluation
+    history_kl = []
     kld = kl(P, Q, xp)
-    history_kl.append(kld)
+    history_kl.append(float(kld))
+    prev_kld = np.inf
+
+    history_norm = []
+    norm = np.inf
+    history_norm.append(norm)
 
     uuu, vvv = xp.tril_indices(len(B), 0)
 
@@ -266,8 +249,11 @@ def LD(X: NDArray[np.float_],
     J_flat = B_flat[vvv]
     K_flat = xp.ravel_multi_index(xp.maximum(B_array[uuu], B_array[vvv]).T, S)  # type: ignore
 
+    early_stop = False
+
     if verbose:
-        print("iter=", 0, "kl=", kld, "mse=", xp.mean((P - Q) ** 2))
+        print("iter=", 0, "kl=", kld, "mse=", xp.mean((P - Q) ** 2), "eta_difference_norm=", norm)
+
     for i in range(n_iter):
         # compute eta
         eta = get_eta(Q, D, xp)
@@ -279,49 +265,58 @@ def LD(X: NDArray[np.float_],
 
         # update theta_b
         if ngd:
-            # theta_b[1:] -= lr*np.linalg.pinv(G[1:,1:])@(eta_b[1:]-eta_hat_b[1:])
             v = xp.linalg.solve(GG[1:, 1:], lr * (eta_b[1:] - eta_hat_b[1:]))
             theta_b[1:] -= v
         else:
-            theta_b -= lr * (eta_b - eta_hat_b)
+            theta_b[1:] -= lr * (eta_b[1:] - eta_hat_b[1:])
+
         # theta_b=>theta
         theta = xp.zeros(S, dtype=dtype)
         xp.put(theta, B_flat, theta_b)
 
-        # theta => H => Q
-        Hq = get_h(theta, D, xp)
-
-        # with logsumexp
-        logQ_ = Hq
-        logQ = logQ_ - logsumexp(logQ_)
-        Q = xp.exp(logQ) + eps
+        # theta => Q
+        Q = get_Q(theta)
+        Q = Q / xp.sum(Q)
 
         # evaluation
+        norm = xp.linalg.norm(eta_b - eta_hat_b)
+        history_norm.append(float(norm))
+
         kld = kl(P, Q, xp)
-        history_kl.append(kld)
+        history_kl.append(float(kld))
         if verbose:
-            print("iter=", i + 1, "kl=", kld, "mse=", xp.mean((P - Q) ** 2))
-        if prev_kld is not None and within_tolerance(kld, prev_kld):
+            print("iter=", i + 1, "kl=", kld, "mse=", xp.mean((P - Q) ** 2), "eta_difference_norm=", norm)
+
+        if norm < error_tol or within_tolerance(kld, prev_kld):
+            early_stop = True
             break
+
         prev_kld = kld
 
-    all_history_kl.append([float(x) for x in history_kl])
+        # lower the learning rate
+        if i in [200, 500, 900]:
+            lr *= 0.1
+
+    if not early_stop:
+        print("Warning: Not Converged. Consider increasing the number of iterations.")
+
     if gpu:
         scaleX = scaleX.get()  # type: ignore
         Q = Q.get()  # type: ignore
         theta = theta.get()  # type: ignore
-    return all_history_kl, scaleX, Q, theta  # type: ignore
 
-def BP(X: NDArray[np.float_],
-    theta: NDArray[np.float_],
+    return history_kl, history_norm, scaleX, Q, theta  # type: ignore
+
+def BP(theta: NDArray[np.float_],
+    X: NDArray[np.float_],
     submfd_eta: NDArray[np.float_],
-    avg_scaleX: np.float_,
+    scale: np.float_,
     B: NDArray[np.intp] | list[tuple[int, ...]] | None = None,
     order: int = 2,
     n_iter: int = 10,
     lr: float = 1.0,
     eps: float = 1.0e-5,
-    error_tol: float = 1.0e-5,
+    error_tol: float = 1.0e-6,
     ngd: bool = True,
     verbose: bool = True,
     gpu: bool = True,
@@ -331,10 +326,10 @@ def BP(X: NDArray[np.float_],
     """Compute many-body tensor approximation.
 
     Args:
-        X: Input tensor.
-        theta: Q's theta coordinates
+        theta: theta coordinates
+        X: submanifold's original tensor
         submfd_eta: The m-flat submanifold specified by eta.
-        avg_scaleX: The average scale of the pre-projection of X.
+        scale: The scale of the pre-projection of P.
         B: B tensor.
         order: Order of default tensor B, if not provided.
         n_iter: Maximum number of iteration.
@@ -349,13 +344,15 @@ def BP(X: NDArray[np.float_],
         dtype: By default, the data-type is inferred from the input data.
 
     Returns:
-        all_history_norm: L₂ norm history.
+        history_kl: KL divergence history.
+        history_norm: norm difference history.
         P: P tensor.
         theta: Theta.
     """
-    all_history_norm = []
-    D = len(X.shape)
-    S = X.shape
+    P_ = get_Q(theta)
+
+    D = len(P_.shape)
+    S = P_.shape
 
     if exit_abs:
         def within_tolerance(kld: np.float_, prev_kld: np.float_):
@@ -365,17 +362,15 @@ def BP(X: NDArray[np.float_],
             return prev_kld - kld < error_tol
 
     if gpu:
+        P_ = cp.asarray(P_, dtype=dtype)
         X = cp.asarray(X, dtype=dtype)
         theta = cp.asarray(theta, dtype=dtype)
         submfd_eta = cp.asarray(submfd_eta, dtype=dtype)
-        avg_scaleX = cp.asarray(avg_scaleX, dtype=dtype)
-        eps = cp.asarray(eps, dtype=dtype)
+        scale = cp.asarray(scale, dtype=dtype)
         lr = cp.asarray(lr, dtype=dtype)
-        logsumexp = cupy_logsumexp
-    else:
-        logsumexp = scipy_logsumexp
 
-    xp = cp.get_array_module(X)
+    xp = cp.get_array_module(P_)
+    P = (P_ + eps) / xp.sum(P_ + eps)
 
     if verbose:
         print("Constructing B")
@@ -387,34 +382,26 @@ def BP(X: NDArray[np.float_],
     if verbose:
         print("B shape:", B_flat.shape)
 
-    full_B = default_B(S, D+1, xp)
+    full_B = default_B(S, D, xp)
     full_B_array = xp.array(full_B)
     full_B_flat = xp.ravel_multi_index(full_B_array.T, S)  # type: ignore
-    # scaleX = xp.sum(X + eps)
-    # Q = (X + eps) / scaleX
-    # Q = X # Assuming already normalized
 
-    # P = xp.ones(Q.shape, dtype=dtype)  # TODO: ones_like?
-    P = X
-    P = P / xp.sum(P)
+    theta_full_b = xp.take(theta, full_B_flat)
 
-    ### eta
-    # print("Get initial eta")
+    ### eta_hat (the target)
     eta_hat = submfd_eta
     eta_hat_b = xp.take(eta_hat, B_flat)
     eta_hat_full_b = xp.take(eta_hat, full_B_flat)
-    ###
-    eta_b = xp.empty((len(B),), dtype=dtype)
-    eta_full_b = xp.empty((len(full_B),), dtype=dtype)
-    # theta_b = xp.take(theta, B_flat)
-    # theta_b = xp.zeros((len(B),), dtype=dtype)
-    # theta_full_b = xp.zeros((len(full_B),), dtype=dtype)
-    theta_full_b = xp.take(theta, full_B_flat)
 
     G = xp.zeros((len(full_B), len(full_B)), dtype=dtype)  # TODO: Too large!
-    history_norm = []
-    prev_norm = None
+
     # evaluation
+    history_kl = []
+    kld = kl(P, X, xp)
+    history_kl.append(float(kld))
+    prev_kld = np.inf
+
+    history_norm = []
     norm = np.inf
     history_norm.append(norm)
 
@@ -425,8 +412,11 @@ def BP(X: NDArray[np.float_],
     J_flat = full_B_flat[vvv]
     K_flat = xp.ravel_multi_index(xp.maximum(full_B_array[uuu], full_B_array[vvv]).T, S)  # type: ignore
 
+    early_stop = False
+
     if verbose:
-        print("iter=", 0, "norm=", norm)
+        print("iter=", 0, "kl=", kld, "eta_difference_norm=", norm)
+
     for i in range(n_iter):
         # compute eta
         eta = get_eta(P, D, xp)
@@ -439,38 +429,45 @@ def BP(X: NDArray[np.float_],
 
         # update theta_b
         if ngd:
-            # theta_b[1:] -= lr*np.linalg.pinv(G[1:,1:])@(eta_b[1:]-eta_hat[1:])
             v = xp.linalg.solve(GG[1:, 1:], lr * (eta_full_b[1:] - eta_hat_full_b[1:]))
             theta_full_b[1:] -= v
         else:
-            theta_full_b -= lr * (eta_full_b - eta_hat_full_b)
+            theta_full_b[1:] -= lr * (eta_full_b[1:] - eta_hat_full_b[1:])
+
         # theta_b=>theta
-        # xp.put(theta, B_flat, theta_b)
-        theta = theta_full_b.reshape(S)
+        theta = xp.zeros(S, dtype=dtype)
+        xp.put(theta, full_B_flat, theta_full_b)
 
-        # theta => H => P
-        Hq = get_h(theta, D, xp)
-
-        # with logsumexp
-        logP_ = Hq
-        logP = logP_ - logsumexp(logP_)
-        P = xp.exp(logP) + eps
+        # theta => P
+        P = get_Q(theta)
+        P = P / xp.sum(P)
 
         # evaluation
         norm = xp.linalg.norm(eta_b - eta_hat_b)
-        history_norm.append(norm)
+        history_norm.append(float(norm))
+
+        kld = kl(P, X, xp)
+        history_kl.append(float(kld))
         if verbose:
-            print("iter=", i + 1, "norm=", norm)
-        if prev_norm is not None and within_tolerance(norm, prev_norm) and norm < error_tol:
+            print("iter=", i + 1, "kl=", kld, "eta_difference_norm=", norm)
+
+        if norm < error_tol or within_tolerance(kld, prev_kld):
+            early_stop = True
             break
-        prev_norm = norm
 
-    all_history_norm.append([float(x) for x in history_norm])
+        prev_kld = kld
 
-    P = P * avg_scaleX
+        # lower the learning rate
+        if i in [200, 500, 900]:
+            lr *= 0.1
+
+    if not early_stop:
+        print("Warning: Not Converged. Consider increasing the number of iterations.")
+
+    P = P * scale
 
     if gpu:
         P = P.get()  # type: ignore
         theta = theta.get()  # type: ignore
 
-    return all_history_norm, P, theta  # type: ignore
+    return history_kl, history_norm, P, theta  # type: ignore
