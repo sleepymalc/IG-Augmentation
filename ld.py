@@ -134,8 +134,8 @@ def get_Q(theta: NDArray[np.float_], eps: float = 1.0e-5, gpu: bool = True, dtyp
         Decomposable tensor.
     """
     if gpu:
-        eps = cp.asarray(eps, dtype=dtype)
         theta = cp.asarray(theta, dtype=dtype)
+        eps = cp.asarray(eps, dtype=dtype)
         logsumexp = cupy_logsumexp
     else:
         logsumexp = scipy_logsumexp
