@@ -117,34 +117,26 @@ def get_h(theta: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.
         theta = xp.cumsum(theta, axis=i)
     return theta
 
-def get_Q(theta: NDArray[np.float_], eps: float = 1.0e-5, gpu: bool = True, dtype: np.dtype | None = None,):
-    r"""Compute decomposable tensor Q from parameter theta
+def get_Q(theta: NDArray[np.float_], logsumexp, eps, xp: ModuleType = cp) -> NDArray[np.float_]:
+    """Compute the probability tensor Q from parameter theta.
 
-    Parameters
-    ----------
-    theta : array
-        second/third-order tensor.
-        Same shapes as input tensor P.
-    eps : (see paper)
+    Args:
+        theta : Theta tensor
+        logsumexp : function
+        eps : (see paper)
+        xp (ModuleType): Array module, either numpy (CPU) or cupy
 
-    Returns
-    -------
-    Q : array
-        second/third-order tensor.
-        Decomposable tensor.
+    Returns:
+    Q : probability tensor of theta
     """
-    if gpu:
-        theta = cp.asarray(theta, dtype=dtype)
-        eps = cp.asarray(eps, dtype=dtype)
-        logsumexp = cupy_logsumexp
-    else:
-        logsumexp = scipy_logsumexp
+    # theta = xp.asarray(theta)
+    # eps = xp.asarray(eps)
 
-    xp = cp.get_array_module(theta)
-
-    # theta => H => Q
+    # theta => H
     D = len(theta.shape)
     Hq = get_h(theta, D, xp)
+
+    # H => Q
     logQ_ = Hq
     logQ = logQ_ - logsumexp(logQ_)
     Q = xp.exp(logQ) + eps
@@ -189,9 +181,6 @@ def LD(X: NDArray[np.float_],
         Q: Q tensor.
         theta: Theta.
     """
-    D = len(X.shape)
-    S = X.shape
-
     if exit_abs:
         def within_tolerance(kld: np.float_, prev_kld: np.float_):
             return abs(prev_kld - kld) < error_tol
@@ -203,8 +192,13 @@ def LD(X: NDArray[np.float_],
         X = cp.asarray(X, dtype=dtype)
         eps = cp.asarray(eps, dtype=dtype)
         lr = cp.asarray(lr, dtype=dtype)
+        logsumexp = cupy_logsumexp
+    else:
+        logsumexp = scipy_logsumexp
 
     xp = cp.get_array_module(X)
+    D = len(X.shape)
+    S = X.shape
 
     if verbose:
         print("Constructing B")
@@ -275,7 +269,7 @@ def LD(X: NDArray[np.float_],
         xp.put(theta, B_flat, theta_b)
 
         # theta => Q
-        Q = get_Q(theta)
+        Q = get_Q(theta, logsumexp, eps=eps, xp=xp)
         Q = Q / xp.sum(Q)
 
         # evaluation
@@ -321,14 +315,15 @@ def BP(theta: NDArray[np.float_],
     verbose: bool = True,
     gpu: bool = True,
     exit_abs: bool = True,
+    exit_mode: str = 'kl',
     dtype: np.dtype | None = None,
 ) -> tuple[list[list[float]], np.float_, NDArray[np.float_], NDArray[np.float_]]:
     """Compute many-body tensor approximation.
 
     Args:
         theta: theta coordinates
-        X: submanifold's original tensor
-        submfd_eta: The m-flat submanifold specified by eta.
+        X: submanifold's original tensor(s)
+        submfd_eta: The m-flat submanifold specified by eta(s).
         scale: The scale of the pre-projection of P.
         B: B tensor.
         order: Order of default tensor B, if not provided.
@@ -349,10 +344,6 @@ def BP(theta: NDArray[np.float_],
         P: P tensor.
         theta: Theta.
     """
-    P_ = get_Q(theta)
-
-    D = len(P_.shape)
-    S = P_.shape
 
     if exit_abs:
         def within_tolerance(kld: np.float_, prev_kld: np.float_):
@@ -362,14 +353,24 @@ def BP(theta: NDArray[np.float_],
             return prev_kld - kld < error_tol
 
     if gpu:
-        P_ = cp.asarray(P_, dtype=dtype)
-        X = cp.asarray(X, dtype=dtype)
         theta = cp.asarray(theta, dtype=dtype)
+        X = cp.asarray(X, dtype=dtype)
         submfd_eta = cp.asarray(submfd_eta, dtype=dtype)
         scale = cp.asarray(scale, dtype=dtype)
+        eps = cp.asarray(eps, dtype=dtype)
         lr = cp.asarray(lr, dtype=dtype)
+        logsumexp = cupy_logsumexp
+    else:
+        logsumexp = scipy_logsumexp
+    k = X.shape[0]
+    lr /= k
 
-    xp = cp.get_array_module(P_)
+    xp = cp.get_array_module(theta)
+
+    P_ = get_Q(theta, logsumexp, eps=eps, xp=xp)
+    D = len(P_.shape)
+    S = P_.shape
+
     P = (P_ + eps) / xp.sum(P_ + eps)
 
     if verbose:
@@ -397,7 +398,9 @@ def BP(theta: NDArray[np.float_],
 
     # evaluation
     history_kl = []
-    kld = kl(P, X, xp)
+    kld = 0
+    for x in X:
+        kld += kl(P, X, xp)
     history_kl.append(float(kld))
     prev_kld = np.inf
 
@@ -439,23 +442,31 @@ def BP(theta: NDArray[np.float_],
         xp.put(theta, full_B_flat, theta_full_b)
 
         # theta => P
-        P = get_Q(theta)
+        P = get_Q(theta, logsumexp, eps=eps, xp=xp)
         P = P / xp.sum(P)
 
         # evaluation
-        norm = xp.linalg.norm(eta_b - eta_hat_b)
-        history_norm.append(float(norm))
+        if exit_mode == 'kl':
+            kld = 0
+            for x in X:
+                kld += kl(P, x, xp)
+            history_kl.append(float(kld))
+            if within_tolerance(kld, prev_kld):
+                early_stop = True
+                break
+            if verbose:
+                print("iter=", i + 1, "kl=", kld, "kl=", kld)
 
-        kld = kl(P, X, xp)
-        history_kl.append(float(kld))
-        if verbose:
-            print("iter=", i + 1, "kl=", kld, "eta_difference_norm=", norm)
+            prev_kld = kld
+        elif exit_mode == 'mse':
+            norm = xp.linalg.norm(eta_b - eta_hat_b)
+            history_norm.append(float(norm))
+            if norm < error_tol:
+                early_stop = True
+                break
+            if verbose:
+                print("iter=", i + 1, "mse=", kld, "eta_difference_norm=", norm)
 
-        if norm < error_tol or within_tolerance(kld, prev_kld):
-            early_stop = True
-            break
-
-        prev_kld = kld
 
         # lower the learning rate
         if i in [200, 500, 900]:
@@ -471,3 +482,29 @@ def BP(theta: NDArray[np.float_],
         theta = theta.get()  # type: ignore
 
     return history_kl, history_norm, P, theta  # type: ignore
+
+def kNN(input_theta, training_theta, k=1, eps: float = 1.0e-5, metric='kl'):
+    xp = cp.get_array_module(input_theta)
+
+    if metric == 'euclidean':
+        def dist(x, y):
+            return xp.linalg.norm(x - y)
+    elif metric == 'kl':
+        def dist(x, y):
+            if xp == cp:
+                logsumexp = cupy_logsumexp
+            else:
+                logsumexp = scipy_logsumexp
+            x_prob = get_Q(x, logsumexp, eps=eps, xp=xp)
+            y_prob = get_Q(y, logsumexp, eps=eps, xp=xp)
+            return kl(x_prob, y_prob, xp)
+
+    distances = []
+    for i, data_theta in enumerate(training_theta):
+        d = dist(input_theta, data_theta)
+        distances.append((d, i))
+
+    distances.sort(key=lambda x: x[0])
+    k_nearest_indices = xp.array([index for _, index in distances[:k]])
+
+    return k_nearest_indices
