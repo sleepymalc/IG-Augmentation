@@ -6,7 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Sequence
 from scipy.special import logsumexp as scipy_logsumexp
-import itertools
+# import itertools
 
 try:
     import cupy as cp
