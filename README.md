@@ -2,6 +2,8 @@
 
 This is the official implementation of [Pseudo-Non-Linear Data Augmentation via Energy Minimization](https://arxiv.org/abs/2410.00718).
 
+![image](https://github.com/user-attachments/assets/49aea781-f462-4c4e-86bd-06b7cf0fb786)
+
 ## Setup Guide
 
 In order to use this framework, you need to have a working installation of Python 3.11 or newer.
