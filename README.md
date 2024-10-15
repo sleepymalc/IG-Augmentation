@@ -13,3 +13,15 @@ In order to use this framework, you need to have a working installation of Pytho
 ## Citations
 
 If you find this repository valuable, please give it a star! Got any questions or feedback? Feel free to open an issue. Using this in your work? Please reference us using the provided citation:
+
+```bibtex
+@misc{hu2024pseudononlinear,
+  author        = {Pingbang Hu and Mahito Sugiyama},
+  title         = {Pseudo-Non-Linear Data Augmentation via Energy Minimization},
+  archiveprefix = {arXiv},
+  eprint        = {2410.00718},
+  primaryclass  = {cs.LG},
+  url           = {https://arxiv.org/abs/2410.00718},
+  year          = {2024}
+}
+```
