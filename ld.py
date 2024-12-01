@@ -72,7 +72,7 @@ def default_B(shape: Sequence[int], order: int, xp: ModuleType = np) -> NDArray[
     mask = (B != 0).sum(axis=1) <= order
     return B[mask]
 
-def kl(P: NDArray[np.float_], Q: NDArray[np.float_], xp: ModuleType = cp) -> np.float_:
+def kl(P: NDArray[np.float64], Q: NDArray[np.float64], xp: ModuleType = cp) -> np.float64:
     """Kullback-Leibler divergence.
 
     Args:
@@ -86,7 +86,7 @@ def kl(P: NDArray[np.float_], Q: NDArray[np.float_], xp: ModuleType = cp) -> np.
     return xp.sum(P * xp.log(P / Q)) - xp.sum(P) + xp.sum(Q)
 
 
-def get_eta(Q: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.float_]:
+def get_eta(Q: NDArray[np.float64], D: int, xp: ModuleType = cp) -> NDArray[np.float64]:
     """Eta tensor.
 
     Args:
@@ -102,7 +102,7 @@ def get_eta(Q: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.fl
     return Q
 
 
-def get_h(theta: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.float_]:
+def get_h(theta: NDArray[np.float64], D: int, xp: ModuleType = cp) -> NDArray[np.float64]:
     """H tensor.
 
     Args:
@@ -117,7 +117,7 @@ def get_h(theta: NDArray[np.float_], D: int, xp: ModuleType = cp) -> NDArray[np.
         theta = xp.cumsum(theta, axis=i)
     return theta
 
-def get_Q(theta: NDArray[np.float_], logsumexp, eps, xp: ModuleType = cp) -> NDArray[np.float_]:
+def get_Q(theta: NDArray[np.float64], logsumexp, eps, xp: ModuleType = cp) -> NDArray[np.float64]:
     """Compute the probability tensor Q from parameter theta.
 
     Args:
@@ -144,7 +144,7 @@ def get_Q(theta: NDArray[np.float_], logsumexp, eps, xp: ModuleType = cp) -> NDA
 
     return Q
 
-def LD(X: NDArray[np.float_],
+def LD(X: NDArray[np.float64],
     B: NDArray[np.intp] | list[tuple[int, ...]] | None = None,
     order: int = 2,
     n_iter: int = 10,
@@ -156,7 +156,7 @@ def LD(X: NDArray[np.float_],
     gpu: bool = True,
     exit_abs: bool = True,
     dtype: np.dtype | None = None,
-) -> tuple[list[list[float]], np.float_, NDArray[np.float_], NDArray[np.float_]]:
+) -> tuple[list[list[float]], np.float64, NDArray[np.float64], NDArray[np.float64]]:
     """Compute many-body tensor approximation.
 
     Args:
@@ -182,10 +182,10 @@ def LD(X: NDArray[np.float_],
         theta: Theta.
     """
     if exit_abs:
-        def within_tolerance(kld: np.float_, prev_kld: np.float_):
+        def within_tolerance(kld: np.float64, prev_kld: np.float64):
             return abs(prev_kld - kld) < error_tol
     else:
-        def within_tolerance(kld: np.float_, prev_kld: np.float_):
+        def within_tolerance(kld: np.float64, prev_kld: np.float64):
             return prev_kld - kld < error_tol
 
     if gpu:
@@ -301,10 +301,10 @@ def LD(X: NDArray[np.float_],
 
     return history_kl, history_norm, scaleX, Q, theta  # type: ignore
 
-def BP(theta: NDArray[np.float_],
-    X: NDArray[np.float_],
-    submfd_eta: NDArray[np.float_],
-    scale: np.float_,
+def BP(theta: NDArray[np.float64],
+    X: NDArray[np.float64],
+    submfd_eta: NDArray[np.float64],
+    scale: np.float64,
     B: NDArray[np.intp] | list[tuple[int, ...]] | None = None,
     order: int = 2,
     n_iter: int = 10,
@@ -317,7 +317,7 @@ def BP(theta: NDArray[np.float_],
     exit_abs: bool = True,
     exit_mode: str = 'kl',
     dtype: np.dtype | None = None,
-) -> tuple[list[list[float]], np.float_, NDArray[np.float_], NDArray[np.float_]]:
+) -> tuple[list[list[float]], np.float64, NDArray[np.float64], NDArray[np.float64]]:
     """Compute many-body tensor approximation.
 
     Args:
@@ -346,10 +346,10 @@ def BP(theta: NDArray[np.float_],
     """
 
     if exit_abs:
-        def within_tolerance(kld: np.float_, prev_kld: np.float_):
+        def within_tolerance(kld: np.float64, prev_kld: np.float64):
             return abs(prev_kld - kld) < error_tol
     else:
-        def within_tolerance(kld: np.float_, prev_kld: np.float_):
+        def within_tolerance(kld: np.float64, prev_kld: np.float64):
             return prev_kld - kld < error_tol
 
     if gpu:
