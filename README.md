@@ -1,4 +1,4 @@
-# IG-Augmentation
+# Pseudo-Non-Linear Data Augmentation
 
 This is the official implementation of [Pseudo-Non-Linear Data Augmentation via Energy Minimization](https://arxiv.org/abs/2410.00718).
 
