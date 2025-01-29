@@ -371,143 +371,142 @@ def BP(
 		P: P tensor.
 		theta: Theta.
 	"""
-	with cp.cuda.Device(2):
-		if exit_abs:
-			def within_tolerance(kld: np.float64, prev_kld: np.float64):
-				return abs(prev_kld - kld) < error_tol
+	if exit_abs:
+		def within_tolerance(kld: np.float64, prev_kld: np.float64):
+			return abs(prev_kld - kld) < error_tol
+	else:
+		def within_tolerance(kld: np.float64, prev_kld: np.float64):
+			return prev_kld - kld < error_tol
+
+	if gpu:
+		theta = cp.asarray(theta, dtype=dtype)
+		X = cp.asarray(X, dtype=dtype)
+		submfd_eta = cp.asarray(submfd_eta, dtype=dtype)
+		scale = cp.asarray(scale, dtype=dtype)
+		eps = cp.asarray(eps, dtype=dtype)
+		lr = cp.asarray(lr, dtype=dtype)
+		logsumexp = cupy_logsumexp
+	else:
+		logsumexp = scipy_logsumexp
+	k = X.shape[0]
+	lr /= k
+
+	xp = cp.get_array_module(theta)
+
+	P_ = get_Q(theta, logsumexp, eps=eps, xp=xp)
+	D = len(P_.shape)
+	S = P_.shape
+
+	P = (P_ + eps) / xp.sum(P_ + eps)
+
+	if verbose:
+		print("Constructing B")
+	if B is None:
+		B = default_B(S, order, xp)
+
+	B_array = xp.array(B)
+	B_flat = xp.ravel_multi_index(B_array.T, S)  # type: ignore
+	if verbose:
+		print("B shape:", B_flat.shape)
+
+	full_B = default_B(S, D, xp)
+	full_B_array = xp.array(full_B)
+	full_B_flat = xp.ravel_multi_index(full_B_array.T, S)  # type: ignore
+
+	theta_full_b = xp.take(theta, full_B_flat)
+
+	### eta_hat (the target)
+	eta_hat = submfd_eta
+	eta_hat_b = xp.take(eta_hat, B_flat)
+	eta_hat_full_b = xp.take(eta_hat, full_B_flat)
+
+	G = xp.zeros((len(full_B), len(full_B)), dtype=dtype)  # TODO: Too large!
+
+	# evaluation
+	history_kl = []
+	kld = 0
+	for x in X:
+		kld += kl(P, X, xp)
+	history_kl.append(float(kld))
+	prev_kld = np.inf
+
+	history_norm = []
+	norm = np.inf
+	history_norm.append(norm)
+
+	uuu, vvv = xp.tril_indices(len(full_B), 0)
+
+	uv = xp.ravel_multi_index(xp.stack((uuu, vvv)), (len(full_B), len(full_B)))  # type: ignore
+	I_flat = full_B_flat[uuu]
+	J_flat = full_B_flat[vvv]
+	K_flat = xp.ravel_multi_index(xp.maximum(full_B_array[uuu], full_B_array[vvv]).T, S)  # type: ignore
+
+	early_stop = False
+
+	if verbose:
+		print("iter=", 0, "kl=", kld, "eta_difference_norm=", norm)
+
+	for i in range(n_iter):
+		# compute eta
+		eta = get_eta(P, D, xp)
+		eta_b = xp.take(eta, B_flat)
+		eta_full_b = xp.take(eta, full_B_flat)
+
+		# compute G
+		xp.put(G, uv, xp.take(eta, K_flat) - xp.take(eta, I_flat) * xp.take(eta, J_flat))
+		GG = G + G.T - xp.diag(G.diagonal())
+
+		# update theta_b
+		if ngd:
+			v = xp.linalg.solve(GG[1:, 1:], lr * (eta_full_b[1:] - eta_hat_full_b[1:]))
+			theta_full_b[1:] -= v
 		else:
-			def within_tolerance(kld: np.float64, prev_kld: np.float64):
-				return prev_kld - kld < error_tol
+			theta_full_b[1:] -= lr * (eta_full_b[1:] - eta_hat_full_b[1:])
 
-		if gpu:
-			theta = cp.asarray(theta, dtype=dtype)
-			X = cp.asarray(X, dtype=dtype)
-			submfd_eta = cp.asarray(submfd_eta, dtype=dtype)
-			scale = cp.asarray(scale, dtype=dtype)
-			eps = cp.asarray(eps, dtype=dtype)
-			lr = cp.asarray(lr, dtype=dtype)
-			logsumexp = cupy_logsumexp
-		else:
-			logsumexp = scipy_logsumexp
-		k = X.shape[0]
-		lr /= k
+		# theta_b=>theta
+		theta = xp.zeros(S, dtype=dtype)
+		xp.put(theta, full_B_flat, theta_full_b)
 
-		xp = cp.get_array_module(theta)
-
-		P_ = get_Q(theta, logsumexp, eps=eps, xp=xp)
-		D = len(P_.shape)
-		S = P_.shape
-
-		P = (P_ + eps) / xp.sum(P_ + eps)
-
-		if verbose:
-			print("Constructing B")
-		if B is None:
-			B = default_B(S, order, xp)
-
-		B_array = xp.array(B)
-		B_flat = xp.ravel_multi_index(B_array.T, S)  # type: ignore
-		if verbose:
-			print("B shape:", B_flat.shape)
-
-		full_B = default_B(S, D, xp)
-		full_B_array = xp.array(full_B)
-		full_B_flat = xp.ravel_multi_index(full_B_array.T, S)  # type: ignore
-
-		theta_full_b = xp.take(theta, full_B_flat)
-
-		### eta_hat (the target)
-		eta_hat = submfd_eta
-		eta_hat_b = xp.take(eta_hat, B_flat)
-		eta_hat_full_b = xp.take(eta_hat, full_B_flat)
-
-		G = xp.zeros((len(full_B), len(full_B)), dtype=dtype)  # TODO: Too large!
+		# theta => P
+		P = get_Q(theta, logsumexp, eps=eps, xp=xp)
+		P = P / xp.sum(P)
 
 		# evaluation
-		history_kl = []
-		kld = 0
-		for x in X:
-			kld += kl(P, X, xp)
-		history_kl.append(float(kld))
-		prev_kld = np.inf
+		if exit_mode == 'kl':
+			kld = 0
+			for x in X:
+				kld += kl(P, x, xp)
+			history_kl.append(float(kld))
+			if within_tolerance(kld, prev_kld):
+				early_stop = True
+				break
+			if verbose:
+				print("iter=", i + 1, "kl=", kld, "kl=", kld)
 
-		history_norm = []
-		norm = np.inf
-		history_norm.append(norm)
-
-		uuu, vvv = xp.tril_indices(len(full_B), 0)
-
-		uv = xp.ravel_multi_index(xp.stack((uuu, vvv)), (len(full_B), len(full_B)))  # type: ignore
-		I_flat = full_B_flat[uuu]
-		J_flat = full_B_flat[vvv]
-		K_flat = xp.ravel_multi_index(xp.maximum(full_B_array[uuu], full_B_array[vvv]).T, S)  # type: ignore
-
-		early_stop = False
-
-		if verbose:
-			print("iter=", 0, "kl=", kld, "eta_difference_norm=", norm)
-
-		for i in range(n_iter):
-			# compute eta
-			eta = get_eta(P, D, xp)
-			eta_b = xp.take(eta, B_flat)
-			eta_full_b = xp.take(eta, full_B_flat)
-
-			# compute G
-			xp.put(G, uv, xp.take(eta, K_flat) - xp.take(eta, I_flat) * xp.take(eta, J_flat))
-			GG = G + G.T - xp.diag(G.diagonal())
-
-			# update theta_b
-			if ngd:
-				v = xp.linalg.solve(GG[1:, 1:], lr * (eta_full_b[1:] - eta_hat_full_b[1:]))
-				theta_full_b[1:] -= v
-			else:
-				theta_full_b[1:] -= lr * (eta_full_b[1:] - eta_hat_full_b[1:])
-
-			# theta_b=>theta
-			theta = xp.zeros(S, dtype=dtype)
-			xp.put(theta, full_B_flat, theta_full_b)
-
-			# theta => P
-			P = get_Q(theta, logsumexp, eps=eps, xp=xp)
-			P = P / xp.sum(P)
-
-			# evaluation
-			if exit_mode == 'kl':
-				kld = 0
-				for x in X:
-					kld += kl(P, x, xp)
-				history_kl.append(float(kld))
-				if within_tolerance(kld, prev_kld):
-					early_stop = True
-					break
-				if verbose:
-					print("iter=", i + 1, "kl=", kld, "kl=", kld)
-
-				prev_kld = kld
-			elif exit_mode == 'mse':
-				norm = xp.linalg.norm(eta_b - eta_hat_b)
-				history_norm.append(float(norm))
-				if norm < error_tol:
-					early_stop = True
-					break
-				if verbose:
-					print("iter=", i + 1, "mse=", kld, "eta_difference_norm=", norm)
+			prev_kld = kld
+		elif exit_mode == 'mse':
+			norm = xp.linalg.norm(eta_b - eta_hat_b)
+			history_norm.append(float(norm))
+			if norm < error_tol:
+				early_stop = True
+				break
+			if verbose:
+				print("iter=", i + 1, "mse=", kld, "eta_difference_norm=", norm)
 
 
-			# lower the learning rate
-			if i in [200, 500, 900]:
-				lr *= 0.1
+		# lower the learning rate
+		if i in [200, 500, 900]:
+			lr *= 0.1
 
-		if not early_stop:
-			print("Warning: Not Converged. Consider increasing the number of iterations.")
-		else:
-			print("Converged.")
+	if not early_stop:
+		print("Warning: Not Converged. Consider increasing the number of iterations.")
+	else:
+		print("Converged.")
 
-		P = P * scale
+	P = P * scale
 
-		if gpu:
-			P = P.get()  # type: ignore
-			theta = theta.get()  # type: ignore
+	if gpu:
+		P = P.get()  # type: ignore
+		theta = theta.get()  # type: ignore
 
-		return history_kl, history_norm, P, theta  # type: ignore
+	return history_kl, history_norm, P, theta  # type: ignore
